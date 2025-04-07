@@ -1,0 +1,32 @@
+
+/* Screenshot Display Styles */
+.screenshot-display {
+  margin-top: 30px; /* Add some space above the screenshot section */
+  padding-top: 20px;
+  border-top: 1px solid #ccc; /* Separator line */
+  width: 100%;
+  text-align: center; /* Center the heading */
+}
+
+.screenshot-images {
+  display: flex; /* Arrange images horizontally */
+  justify-content: space-around; /* Distribute space around images */
+  align-items: center; /* Align images vertically */
+  margin-top: 15px;
+  min-height: 150px; /* Ensure the container has some height even if empty */
+  background-color: #f9f9f9; /* Slight background tint */
+  padding: 10px;
+  border-radius: 4px;
+}
+
+.screenshot-image {
+  max-width: 45%; /* Limit image width to fit side-by-side */
+  max-height: 200px; /* Limit image height */
+  height: auto; /* Maintain aspect ratio */
+  border: 1px solid #ddd; /* Add a light border */
+  box-shadow: 2px 2px 5px rgba(0,0,0,0.1); /* Subtle shadow */
+}
+
+.screenshot-display p { /* Style for the "No screenshots" message */
+  color: #888;
+}
