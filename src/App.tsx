@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Button } from "@/components/ui/button";
@@ -197,10 +197,6 @@ function App() {
     };
   }, []); // Run only once on mount
 
-
-  async function triggerSentryTestPanic() {
-    invoke('test_sentry_panic');
-  }
   const handleStart = async () => {
     setLastError(null);
     try {
@@ -243,13 +239,6 @@ function App() {
       setLastError(`Error resuming timer: ${err}`);
     }
   };
-
-  // Base button classes
-  const btnClasses = "px-4 py-2 rounded text-white font-semibold shadow disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-2 hover:cursor-pointer";
-  const btnPrimary = `${btnClasses} bg-blue-500 hover:bg-blue-600 focus:ring-blue-400`;
-  const btnSecondary = `${btnClasses} bg-gray-500 hover:bg-gray-600 focus:ring-gray-400`;
-  const btnWarning = `${btnClasses} bg-yellow-500 hover:bg-yellow-600 focus:ring-yellow-400`;
-
 
   return (
     // Added relative positioning for the absolute date/time display
