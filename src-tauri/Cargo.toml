@@ -33,3 +33,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = "0.4" # Added explicitly as sqlx might need it directly sometimes
 image = { version = "0.25", features = ["png"] } # For PNG encoding
 base64 = "0.22" # Added for screenshot data URI encoding
+rdev = "0.5" # Added for keyboard/mouse activity monitoring
