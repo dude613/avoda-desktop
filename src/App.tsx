@@ -4,6 +4,12 @@ import { listen } from '@tauri-apps/api/event';
 import { Button } from "@/components/ui/button";
 import './App.css'; // Now imports Tailwind
 
+// Interface for activity data from backend
+interface ActivityData {
+  key_presses: number;
+  mouse_clicks: number;
+}
+
 export enum TimerStatus {
   Stopped = 'Stopped',
   Running = 'Running',
@@ -27,7 +33,9 @@ function App() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastScreenshots, setLastScreenshots] = useState<(string | null)[]>([null, null]); // Store last 2 screenshot data URIs
   const [currentDateTime, setCurrentDateTime] = useState(new Date()); // State for live date/time
+  const [activityData, setActivityData] = useState<ActivityData | null>(null); // State for activity data
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const activityIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for activity interval
 
 
   // Function to fetch both status and elapsed time
@@ -62,10 +70,11 @@ function App() {
       setTimerStatus(newStatus);
       setLastError(null); // Clear error on successful status change
 
-      // If stopped, reset time and clear screenshots
+      // If stopped, reset time, clear screenshots, and reset activity display
       if (newStatus === TimerStatus.Stopped) {
         setElapsedTime(0);
         setLastScreenshots([null, null]); // Clear screenshots
+        setActivityData({ key_presses: 0, mouse_clicks: 0 }); // Reset activity display
       }
       // If paused, fetch the exact time it was paused at
       else if (newStatus === TimerStatus.Paused) {
@@ -117,6 +126,10 @@ function App() {
        if (intervalRef.current) {
          clearInterval(intervalRef.current); // Clear interval on unmount
        }
+       // Clear activity interval on unmount
+       if (activityIntervalRef.current) {
+         clearInterval(activityIntervalRef.current);
+       }
      };
   }, []); // Empty dependency array ensures this runs only once on mount
 
@@ -156,6 +169,33 @@ function App() {
       }
     };
   }, [timerStatus]); // Rerun when timerStatus changes
+
+
+  // Effect to fetch activity data periodically
+  useEffect(() => {
+    const fetchActivityData = async () => {
+      try {
+        const data = await invoke<ActivityData>('get_activity_data');
+        setActivityData(data);
+      } catch (err) {
+        console.error("Error fetching activity data:", err);
+        // Optionally set an error state specific to activity data
+      }
+    };
+
+    // Fetch immediately on mount
+    fetchActivityData();
+
+    // Set up interval to fetch every 5 seconds (adjust as needed)
+    activityIntervalRef.current = setInterval(fetchActivityData, 5000);
+
+    // Cleanup interval on unmount
+    return () => {
+      if (activityIntervalRef.current) {
+        clearInterval(activityIntervalRef.current);
+      }
+    };
+  }, []); // Run only once on mount
 
 
   async function triggerSentryTestPanic() {
@@ -223,10 +263,17 @@ function App() {
       {/* Header */}
       <h1 className="text-3xl font-bold text-center mb-4 mt-2 text-gray-800">Screenshot Timer</h1>
 
-      {/* Status and Timer Display */}
+      {/* Status, Timer, and Activity Display */}
       <div className="text-center my-4 p-4 bg-gray-100 rounded-lg shadow-inner">
          <p className="text-gray-700">Status: <strong className="font-semibold text-gray-900">{timerStatus}</strong></p>
          <p className="mt-1">Elapsed Time: <strong className="font-mono text-2xl text-blue-600">{formatTime(elapsedTime)}</strong></p>
+         {/* Activity Data Display */}
+         {activityData && (
+           <div className="mt-2 text-sm text-gray-600">
+             <span>Keys: <strong className="font-semibold text-gray-800">{activityData.key_presses}</strong></span>
+             <span className="ml-4">Clicks: <strong className="font-semibold text-gray-800">{activityData.mouse_clicks}</strong></span>
+           </div>
+         )}
       </div>
 
       {/* Error Message */}

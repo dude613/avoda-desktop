@@ -11,7 +11,7 @@ use sqlx::{Pool, Postgres};
 use std::fs; // Added for file system operations
 use std::io::Cursor; // Added for writing PNG to buffer
 use std::path::PathBuf; // Added for path manipulation
-use std::sync::Arc;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc}; // Added AtomicBool and Ordering
 use std::time::Duration; // Removed SystemTime import
 use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State}; // Added Manager back
@@ -19,6 +19,8 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use uuid::Uuid;
 
+mod activity_monitor; // Declare the new module
+use crate::activity_monitor::{ActivityCounters, ActivityData, listen as activity_listen, get_current_counts}; // Import items
 
 // Represents the possible states of the timer/screenshot task
 #[derive(Clone, serde::Serialize, Debug, PartialEq)]
@@ -44,6 +46,8 @@ struct AppState {
     command_tx: Arc<Mutex<Option<Sender<TimerCommand>>>>,
     current_session_id: Arc<Mutex<Option<Uuid>>>, // Added
     session_start_time: Arc<Mutex<Option<chrono::DateTime<Utc>>>>, // Added to track start time for elapsed calculation
+    activity_counters: Arc<ActivityCounters>, // Added for activity monitoring
+    is_session_active: Arc<AtomicBool>, // Flag to control activity counting
 }
 
 
@@ -234,6 +238,14 @@ async fn start_timer(state: State<'_, AppState>, app_handle: AppHandle) -> Resul
     }
 
     println!("Starting timer...");
+
+    // --- Reset Activity Counters and Activate Listening ---
+    state.activity_counters.key_presses.store(0, Ordering::Relaxed);
+    state.activity_counters.mouse_clicks.store(0, Ordering::Relaxed);
+    state.is_session_active.store(true, Ordering::Relaxed); // Enable counting
+    println!("Activity counters reset and listening activated.");
+    // --- End Reset ---
+
     *status = TimerStatus::Running;
 
     // --- Session Handling ---
@@ -282,19 +294,36 @@ async fn stop_timer(state: State<'_, AppState>, app_handle: AppHandle) -> Result
      }
      println!("Stopping timer...");
 
-     // --- Session Handling ---
+     // --- Stop Activity Counting and Save Counts ---
+     state.is_session_active.store(false, Ordering::Relaxed); // Disable counting FIRST
+     println!("Activity listening deactivated.");
+
+     let final_key_presses = state.activity_counters.key_presses.load(Ordering::Relaxed) as i32; // Cast to i32 for DB
+     let final_mouse_clicks = state.activity_counters.mouse_clicks.load(Ordering::Relaxed) as i32; // Cast to i32 for DB
+     println!("Final counts - Keys: {}, Clicks: {}", final_key_presses, final_mouse_clicks);
+
+     // --- Session Handling (Update DB with counts) ---
      let session_id_opt = *state.current_session_id.lock().await;
      if let Some(session_id) = session_id_opt {
          let end_time = Utc::now();
-         // Update session end time in DB
-         // Use query() function
-         sqlx::query("UPDATE sessions SET end_time = $1 WHERE id = $2") // Use query()
-             .bind(end_time)
-             .bind(session_id)
-             .execute(&state.db_pool)
-             .await
-             .map_err(|e| format!("Failed to update session end time in DB: {}", e))?;
-         println!("Ended session with ID: {}", session_id);
+         // Update session end time AND activity counts in DB
+         sqlx::query(
+             r#"
+             UPDATE sessions
+             SET end_time = $1, key_press_count = $2, mouse_click_count = $3
+             WHERE id = $4
+             "#
+         )
+         .bind(end_time)
+         .bind(final_key_presses) // Bind key presses
+         .bind(final_mouse_clicks) // Bind mouse clicks
+         .bind(session_id)
+         .execute(&state.db_pool)
+         .await
+         .map_err(|e| format!("Failed to update session end time and activity counts in DB: {}", e))?;
+         println!("Ended session with ID: {} and saved activity counts.", session_id);
+     } else {
+         eprintln!("Warning: Could not find current session ID when stopping timer to save activity counts.");
      }
      *state.current_session_id.lock().await = None; // Clear current session ID
      *state.session_start_time.lock().await = None; // Clear start time
@@ -438,6 +467,14 @@ fn test_sentry_panic() {
     sentry::capture_message("test", sentry::Level::Info);
 }
 
+// --- NEW COMMAND: get_activity_data ---
+#[tauri::command]
+fn get_activity_data(state: State<'_, AppState>) -> Result<ActivityData, String> {
+    // Directly use the helper function from the module
+    Ok(get_current_counts(&state.activity_counters))
+}
+
+
 // Function to set up the database (create tables if not exists)
 async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     println!("Setting up database tables if they don't exist...");
@@ -460,6 +497,23 @@ async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     println!("Table 'sessions' ensured.");
+
+    // Add activity count columns to sessions table if they don't exist
+    sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sessions' AND column_name='key_press_count') THEN
+                ALTER TABLE sessions ADD COLUMN key_press_count INTEGER NULL;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sessions' AND column_name='mouse_click_count') THEN
+                ALTER TABLE sessions ADD COLUMN mouse_click_count INTEGER NULL;
+            END IF;
+        END $$;
+        "#
+    ).execute(pool).await?;
+    println!("Columns 'key_press_count' and 'mouse_click_count' ensured in 'sessions'.");
+
 
     // Create screenshots table (if not exists)
     // Use query() function and add new columns
@@ -587,7 +641,18 @@ fn main() {
         command_tx: Arc::new(Mutex::new(None)),
         current_session_id: Arc::new(Mutex::new(None)), // Initialize new state field
         session_start_time: Arc::new(Mutex::new(None)), // Initialize new state field
+        activity_counters: Arc::new(ActivityCounters::default()), // Initialize activity counters
+        is_session_active: Arc::new(AtomicBool::new(false)), // Initialize session active flag
     };
+
+    // --- Spawn Activity Monitor Thread ---
+    // rdev::listen is blocking, so it needs its own dedicated thread, not a tokio task.
+    let activity_counters_clone = Arc::clone(&app_state.activity_counters);
+    let is_session_active_clone = Arc::clone(&app_state.is_session_active); // Clone the flag
+    std::thread::spawn(move || {
+        activity_listen(activity_counters_clone, is_session_active_clone); // Pass the flag
+    });
+    // --- End Spawn Activity Monitor Thread ---
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -608,7 +673,8 @@ fn main() {
             get_timer_status,
             get_elapsed_time, // Added
             get_screenshot_data, // Added
-            test_sentry_panic
+            test_sentry_panic,
+            get_activity_data // Added activity data command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
