@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import './App.css'; // Assuming basic styling exists
+import { Button } from "@/components/ui/button";
+import './App.css'; // Now imports Tailwind
 
-// Define the TimerStatus enum matching the backend
-enum TimerStatus {
+export enum TimerStatus {
   Stopped = 'Stopped',
   Running = 'Running',
   Paused = 'Paused',
 }
 
-// Helper function to format seconds into HH:MM:SS
+// Re-added formatTime helper function
 const formatTime = (totalSeconds: number): string => {
   // Ensure totalSeconds is an integer
   totalSeconds = Math.floor(totalSeconds);
@@ -26,6 +26,7 @@ function App() {
   const [elapsedTime, setElapsedTime] = useState<number>(0); // Time in seconds
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastScreenshots, setLastScreenshots] = useState<(string | null)[]>([null, null]); // Store last 2 screenshot data URIs
+  const [currentDateTime, setCurrentDateTime] = useState(new Date()); // State for live date/time
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
 
@@ -61,9 +62,10 @@ function App() {
       setTimerStatus(newStatus);
       setLastError(null); // Clear error on successful status change
 
-      // If stopped, reset time immediately on frontend for responsiveness
+      // If stopped, reset time and clear screenshots
       if (newStatus === TimerStatus.Stopped) {
         setElapsedTime(0);
+        setLastScreenshots([null, null]); // Clear screenshots
       }
       // If paused, fetch the exact time it was paused at
       else if (newStatus === TimerStatus.Paused) {
@@ -119,6 +121,19 @@ function App() {
   }, []); // Empty dependency array ensures this runs only once on mount
 
 
+  // Effect to update the current date/time every second
+  useEffect(() => {
+    const dateTimeInterval = setInterval(() => {
+      setCurrentDateTime(new Date());
+    }, 1000); // Update every second
+
+    // Cleanup interval on unmount
+    return () => {
+      clearInterval(dateTimeInterval);
+    };
+  }, []); // Run only once on mount
+
+
   // Effect to manage the timer interval based on status
   useEffect(() => {
     if (intervalRef.current) {
@@ -143,23 +158,13 @@ function App() {
   }, [timerStatus]); // Rerun when timerStatus changes
 
 
-  // Example function to trigger the panic
   async function triggerSentryTestPanic() {
-  try {
-    await invoke('test_sentry_panic');
-    // This line won't be reached because the backend will panic
-  } catch (error) {
-    // The frontend might receive an error if Tauri handles the panic gracefully,
-    // but the primary goal is to see the event in Sentry.
-    console.error("Error invoking test_sentry_panic (this might be expected):", error);
+    invoke('test_sentry_panic');
   }
-}
   const handleStart = async () => {
     setLastError(null);
     try {
-      triggerSentryTestPanic();
       await invoke('start_timer');
-      // Status update will come via the listener
     } catch (err) {
       console.error("Error starting timer:", err);
       setLastError(`Error starting timer: ${err}`);
@@ -199,46 +204,64 @@ function App() {
     }
   };
 
+  // Base button classes
+  const btnClasses = "px-4 py-2 rounded text-white font-semibold shadow disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-2 hover:cursor-pointer";
+  const btnPrimary = `${btnClasses} bg-blue-500 hover:bg-blue-600 focus:ring-blue-400`;
+  const btnSecondary = `${btnClasses} bg-gray-500 hover:bg-gray-600 focus:ring-gray-400`;
+  const btnWarning = `${btnClasses} bg-yellow-500 hover:bg-yellow-600 focus:ring-yellow-400`;
+
+
   return (
-    <div className="container">
-      <h1>Screenshot Timer</h1>
-      <div className="timer-display">
-         <p>Status: <strong>{timerStatus}</strong></p>
-         <p>Elapsed Time: <strong>{formatTime(elapsedTime)}</strong></p>
+    // Added relative positioning for the absolute date/time display
+    <div className="relative container mx-auto p-4 max-w-2xl min-h-screen flex flex-col">
+
+      {/* Date/Time Display */}
+      <div className="absolute top-4 right-4 text-sm text-gray-600">
+        {currentDateTime.toLocaleString()}
       </div>
 
-      {lastError && <p className="error-message">Error: {lastError}</p>}
+      {/* Header */}
+      <h1 className="text-3xl font-bold text-center mb-4 mt-2 text-gray-800">Screenshot Timer</h1>
 
-      <div className="button-group">
+      {/* Status and Timer Display */}
+      <div className="text-center my-4 p-4 bg-gray-100 rounded-lg shadow-inner">
+         <p className="text-gray-700">Status: <strong className="font-semibold text-gray-900">{timerStatus}</strong></p>
+         <p className="mt-1">Elapsed Time: <strong className="font-mono text-2xl text-blue-600">{formatTime(elapsedTime)}</strong></p>
+      </div>
+
+      {/* Error Message */}
+      {lastError && <p className="text-red-700 text-center my-2 p-3 bg-red-100 rounded border border-red-400 shadow">Error: {lastError}</p>}
+
+      <div className="flex justify-center gap-4 my-6"> {/* Button group */}
         {timerStatus === TimerStatus.Stopped && (
-          <button onClick={handleStart}>Start</button>
+          <Button onClick={handleStart} variant="default">Start</Button>
         )}
         {timerStatus === TimerStatus.Running && (
           <>
-            <button onClick={handlePause}>Pause</button>
-            <button onClick={handleStop}>Stop</button>
+            <Button onClick={handlePause} variant="outline">Pause</Button>
+            <Button onClick={handleStop} variant="destructive">Stop</Button>
           </>
         )}
         {timerStatus === TimerStatus.Paused && (
           <>
-            <button onClick={handleResume}>Resume</button>
-            <button onClick={handleStop}>Stop</button>
+            <Button onClick={handleResume} variant="default">Resume</Button>
+            <Button onClick={handleStop} variant="destructive">Stop</Button>
           </>
         )}
       </div>
 
       {/* Screenshot Display Area */}
-      <div className="screenshot-display">
-        <h2>Last Screenshots</h2>
-        <div className="screenshot-images">
+      <div className="mt-8 pt-6 border-t border-gray-300 w-full text-center"> {/* Screenshot display container */}
+        <h2 className="text-xl font-semibold mb-4">Last Screenshots</h2>
+        <div className="flex justify-around items-center mt-4 min-h-[150px] bg-gray-50 p-3 rounded-md border border-gray-200"> {/* Images container */}
           {lastScreenshots[0] && (
-            <img src={lastScreenshots[0]} alt="Previous screenshot" className="screenshot-image" />
+            <img src={lastScreenshots[0]} alt="Previous screenshot" className="max-w-[45%] max-h-[200px] h-auto border border-gray-300 shadow-md rounded" />
           )}
           {lastScreenshots[1] && (
-            <img src={lastScreenshots[1]} alt="Latest screenshot" className="screenshot-image" />
+            <img src={lastScreenshots[1]} alt="Latest screenshot" className="max-w-[45%] max-h-[200px] h-auto border border-gray-300 shadow-md rounded" />
           )}
           {!lastScreenshots[0] && !lastScreenshots[1] && (
-            <p>No screenshots captured yet in this session.</p>
+            <p className="text-gray-500">No screenshots captured yet in this session.</p>
           )}
         </div>
       </div>

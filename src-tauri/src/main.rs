@@ -2,15 +2,17 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _}; // For Base64 encoding
 use chrono::Utc;
-use image::codecs::png::PngEncoder; // Added for PNG encoding
+use image::{codecs::png::PngEncoder, ImageBuffer, Rgba}; // Added for PNG encoding, ImageBuffer, Rgba
 use image::ImageEncoder; // Added for PNG encoding
 use rand::Rng;
-use screenshots::Screen;
+use xcap::{Monitor, Window}; // Replaced screenshots::Screen with xcap types
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres};
+use std::fs; // Added for file system operations
 use std::io::Cursor; // Added for writing PNG to buffer
+use std::path::PathBuf; // Added for path manipulation
 use std::sync::Arc;
-use std::time::{Duration, SystemTime}; // For elapsed time calculation
+use std::time::Duration; // Removed SystemTime import
 use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State}; // Added Manager back
 use tokio::sync::mpsc::{self, Sender};
@@ -45,57 +47,94 @@ struct AppState {
 }
 
 
-// Function to capture a screenshot and save it to the database
-// Modified signature to accept session_id and app_handle
+// Function to capture a screenshot, gather system info, and save everything
 async fn capture_and_save(
     db_pool: &Pool<Postgres>,
     session_id: Uuid,
     app_handle: &AppHandle, // Added for emitting event
 ) -> Result<(), String> {
-    let screens = Screen::all().map_err(|e| format!("Failed to get screens: {}", e))?;
-    // For simplicity, capture the primary screen. Handle multiple screens if needed.
-    if let Some(screen) = screens.first() {
-        // println!("Capturing screen: {:?}", screen.display_info); // Less verbose logging
-        let image = screen
-            .capture()
-            .map_err(|e| format!("Failed to capture screen: {}", e))?;
+    // --- Gather System Info using xcap ---
+    let monitors = Monitor::all().map_err(|e| format!("Failed to get monitors: {}", e))?;
+    let monitor_count = monitors.len() as i32; // Cast usize to i32 for DB
+
+    let windows = Window::all().map_err(|e| format!("Failed to get windows: {}", e))?;
+    let open_windows: Vec<String> = windows
+        .iter()
+        .filter_map(|w| {
+            // If the window is minimized, filter it out.
+            if w.is_minimized() {
+                return None;
+            }
+            // w.title() returns &str directly
+            let title_str = w.title();
+            if !title_str.is_empty() {
+                Some(title_str.to_string()) // Convert non-empty &str to String
+            } else {
+                None // Title is empty
+            }
+        })
+        .collect();
+    // --- End Gather System Info ---
+
+    // Capture the primary monitor (or the first one found)
+    if let Some(monitor) = monitors.first() {
+        println!("Capturing monitor: {}", monitor.name());
+        let image: ImageBuffer<Rgba<u8>, Vec<u8>> = monitor // xcap returns ImageBuffer
+            .capture_image()
+            .map_err(|e| format!("Failed to capture screen using xcap: {}", e))?;
 
         // Encode as PNG
         let mut png_buffer = Cursor::new(Vec::new());
         let encoder = PngEncoder::new(&mut png_buffer);
         encoder
             .write_image(
-                image.as_raw(),
+                image.as_raw(), // Use as_raw() for the underlying buffer
                 image.width(),
                 image.height(),
-                image::ExtendedColorType::Rgba8.into() // Adding .into() to convert ColorType to ExtendedColorType
+                image::ColorType::Rgba8.into() // Ensure .into() is present
             )
             .map_err(|e| format!("Failed to encode PNG: {}", e))?;
         let buffer_data = png_buffer.into_inner(); // Get the Vec<u8>
 
         let capture_time = Utc::now();
-        let screenshot_id = Uuid::new_v4(); // Use a separate ID for the screenshot itself
+        let screenshot_id = Uuid::new_v4();
 
-        // Insert into DB including session_id
-        // Use sqlx::query() for runtime check
-        sqlx::query( // Using query() function
+        // Insert into DB including new fields, using query() function (runtime check)
+        sqlx::query( // Use query()
             r#"
-            INSERT INTO screenshots (id, session_id, capture_time, image_data)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO screenshots (id, session_id, capture_time, image_data, monitor_count, open_windows)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#
         )
         .bind(screenshot_id)
         .bind(session_id)
         .bind(capture_time)
-        .bind(&buffer_data)
+        .bind(&buffer_data) // BYTEA
+        .bind(monitor_count) // INTEGER
+        .bind(&open_windows) // TEXT[]
         .execute(db_pool)
         .await
         .map_err(|e| format!("Failed to insert screenshot into DB: {}", e))?;
 
         println!(
-            "Screenshot saved successfully with ID: {} for session: {}",
-            screenshot_id, session_id
+            "Screenshot saved to DB successfully with ID: {} for session: {} (Monitors: {}, Windows: {})",
+            screenshot_id, session_id, monitor_count, open_windows.len()
         );
+
+        // --- Save screenshot locally ---
+        let screenshots_dir = PathBuf::from("src-tauri/screenshots");
+        fs::create_dir_all(&screenshots_dir)
+            .map_err(|e| format!("Failed to create screenshots directory: {}", e))?;
+
+        let filename = format!("{}.png", screenshot_id);
+        let file_path = screenshots_dir.join(&filename); // Use reference to filename
+
+        fs::write(&file_path, &buffer_data)
+            .map_err(|e| format!("Failed to save screenshot file locally: {}", e))?;
+
+        println!("Screenshot saved locally to: {:?}", file_path);
+        // --- End save screenshot locally ---
+
 
         // Emit event to frontend with the screenshot ID
         app_handle
@@ -204,8 +243,8 @@ async fn start_timer(state: State<'_, AppState>, app_handle: AppHandle) -> Resul
     *state.session_start_time.lock().await = Some(start_time); // Store start time
 
     // Insert new session into DB
-    // Use sqlx::query() for runtime check
-    sqlx::query("INSERT INTO sessions (id, start_time) VALUES ($1, $2)") // Using query() function
+    // Use query() function
+    sqlx::query("INSERT INTO sessions (id, start_time) VALUES ($1, $2)") // Use query()
         .bind(session_id)
         .bind(start_time)
         .execute(&state.db_pool)
@@ -248,8 +287,8 @@ async fn stop_timer(state: State<'_, AppState>, app_handle: AppHandle) -> Result
      if let Some(session_id) = session_id_opt {
          let end_time = Utc::now();
          // Update session end time in DB
-         // Use sqlx::query() for runtime check
-         sqlx::query("UPDATE sessions SET end_time = $1 WHERE id = $2") // Using query() function
+         // Use query() function
+         sqlx::query("UPDATE sessions SET end_time = $1 WHERE id = $2") // Use query()
              .bind(end_time)
              .bind(session_id)
              .execute(&state.db_pool)
@@ -350,8 +389,8 @@ async fn get_screenshot_data(
 
     println!("Fetching screenshot data for ID: {}", screenshot_uuid);
 
-    // Use sqlx::query() for runtime check
-    let record = sqlx::query("SELECT image_data FROM screenshots WHERE id = $1") // Using query() function
+    // Use query() function (runtime check) for fetching screenshot data
+    let record = sqlx::query("SELECT image_data FROM screenshots WHERE id = $1") // Use query()
         .bind(screenshot_uuid)
         .fetch_optional(&state.db_pool)
         .await
@@ -393,7 +432,6 @@ async fn get_elapsed_time(state: State<'_, AppState>) -> Result<u64, String> {
     }
 }
 
-
 // Tauri command to intentionally cause a panic for Sentry testing
 #[tauri::command]
 fn test_sentry_panic() {
@@ -403,12 +441,14 @@ fn test_sentry_panic() {
 // Function to set up the database (create tables if not exists)
 async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     println!("Setting up database tables if they don't exist...");
-    sqlx::query!("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+    // Use query() function
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";") // Use query()
         .execute(pool)
         .await?;
 
     // Create sessions table
-    sqlx::query!(
+    // Use query() function
+    sqlx::query( // Use query()
         r#"
         CREATE TABLE IF NOT EXISTS sessions (
             id UUID PRIMARY KEY,
@@ -422,13 +462,16 @@ async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     println!("Table 'sessions' ensured.");
 
     // Create screenshots table (if not exists)
-    sqlx::query!(
+    // Use query() function and add new columns
+    sqlx::query( // Use query()
         r#"
         CREATE TABLE IF NOT EXISTS screenshots (
             id UUID PRIMARY KEY,
             capture_time TIMESTAMPTZ NOT NULL,
             image_data BYTEA NOT NULL,
-            session_id UUID NULL -- Initially allow NULL, FK added below
+            session_id UUID NULL, -- Initially allow NULL, FK added below
+            monitor_count INTEGER NULL, -- Added monitor count
+            open_windows TEXT[] NULL -- Added open windows list (PostgreSQL array)
         );
         "#
     )
@@ -437,8 +480,9 @@ async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
     println!("Table 'screenshots' ensured.");
 
 
-    // Use ALTER TABLE to add the column if the table already exists and column missing
-     sqlx::query!(
+    // Use ALTER TABLE to add the session_id column if missing
+    // Use query() function
+     sqlx::query( // Use query()
          r#"
          DO $$
          BEGIN
@@ -450,10 +494,40 @@ async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
      ).execute(pool).await?;
      println!("Column 'session_id' ensured in 'screenshots'.");
 
+    // Use ALTER TABLE to add the monitor_count column if missing
+    // Use query() function
+    sqlx::query( // Use query()
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='screenshots' AND column_name='monitor_count') THEN
+                ALTER TABLE screenshots ADD COLUMN monitor_count INTEGER;
+            END IF;
+        END $$;
+        "#
+    ).execute(pool).await?;
+    println!("Column 'monitor_count' ensured in 'screenshots'.");
+
+    // Use ALTER TABLE to add the open_windows column if missing
+    // Use query() function
+    sqlx::query( // Use query()
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='screenshots' AND column_name='open_windows') THEN
+                ALTER TABLE screenshots ADD COLUMN open_windows TEXT[]; -- PostgreSQL array type
+            END IF;
+        END $$;
+        "#
+    ).execute(pool).await?;
+    println!("Column 'open_windows' ensured in 'screenshots'.");
+
+
      // Add FK constraint separately to handle potential timing issues or existing data
      // This might fail if there are existing screenshots without a valid session_id.
      // Consider data migration strategy for production.
-     sqlx::query!(
+     // Use query() function
+     sqlx::query( // Use query()
          r#"
          DO $$
          BEGIN
@@ -478,7 +552,7 @@ async fn setup_database(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
 
 fn main() {
     // Initialize Sentry
-    let _guard = sentry::init(("https://6d8ed92c0ada0a87a6fd9c785b1fac0e@sen.newhoopla.com/9", sentry::ClientOptions {
+    let _guard = sentry::init(("https://6d8ed92c0ada0a87a6fd9c785b1fac0e@sen.newhoopla.com/10", sentry::ClientOptions {
       release: sentry::release_name!(),
       ..Default::default()
     }));
@@ -506,7 +580,6 @@ fn main() {
         pool
     });
 
-    // Initialize the application state
     // Initialize the application state
     let app_state = AppState {
         db_pool,
@@ -581,5 +654,6 @@ mod tests {
     fn it_works() {
         let result = add(2, 2);
         assert_eq!(result, 4);
+
     }
 }

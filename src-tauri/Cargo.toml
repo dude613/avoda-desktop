@@ -21,12 +21,12 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-sentry = "0.37.0"
+sentry = "0.32.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] } # Removed macros feature
 tokio = { version = "1", features = ["sync", "time"] }
-screenshots = "0.8" # Use a recent compatible version
+xcap = "0.0.11" # Replaced screenshots with xcap
 rand = "0.8"
 dotenvy = "0.15"
 uuid = { version = "1", features = ["v4", "serde"] }
