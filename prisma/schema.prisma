@@ -1,0 +1,129 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model organizations {
+  id                Int            @id @default(autoincrement())
+  name              String         @unique
+  industry          Industry?
+  size              Size?
+  onboardingSkipped Boolean        @default(false)
+  userId            String
+  users             users          @relation(fields: [userId], references: [id])
+  team_members      team_members[]
+}
+
+model otps {
+  id        Int      @id @default(autoincrement())
+  userId    String   @unique
+  otp       String
+  expiresAt DateTime
+}
+
+model screenshots {
+  id            String    @id @db.Uuid
+  capture_time  DateTime  @db.Timestamptz(6)
+  image_data    Bytes
+  session_id    String?   @db.Uuid
+  monitor_count Int?
+  open_windows  String[]
+  sessions      sessions? @relation(fields: [session_id], references: [id], onUpdate: NoAction, map: "fk_session")
+}
+
+model sessions {
+  id                String        @id @db.Uuid
+  start_time        DateTime      @db.Timestamptz(6)
+  end_time          DateTime?     @db.Timestamptz(6)
+  key_press_count   Int?
+  mouse_click_count Int?
+  screenshots       screenshots[]
+}
+
+model team_members {
+  id               Int              @id @default(autoincrement())
+  organizationId   Int
+  role             TeamMemberRole   @default(employee)
+  status           TeamMemberStatus @default(pending)
+  userDeleteStatus UserDeleteStatus @default(active)
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  email            String           @unique
+  name             String?
+  organizations    organizations    @relation(fields: [organizationId], references: [id])
+}
+
+model timers {
+  id              String    @id
+  task            String
+  project         String?
+  client          String?
+  startTime       DateTime
+  endTime         DateTime?
+  isActive        Boolean   @default(true)
+  duration        Int       @default(0)
+  createdAt       DateTime  @default(now())
+  isPaused        Boolean   @default(false)
+  pauseTime       DateTime?
+  totalPausedTime Int       @default(0)
+  userId          String
+  users           users     @relation(fields: [userId], references: [id])
+}
+
+model users {
+  id                   String          @id
+  userName             String?
+  email                String          @unique
+  password             String?
+  refreshToken         String?
+  googleId             String?         @unique
+  picture              String?
+  role                 String?         @default("user")
+  createdAt            DateTime        @default(now())
+  verified             Boolean         @default(false)
+  lastLoginAt          DateTime?
+  otp                  String?
+  otpExpiry            DateTime?
+  resetPasswordExpires DateTime?
+  resetPasswordToken   String?
+  organizations        organizations[]
+  timers               timers[]
+}
+
+enum Industry {
+  technology
+  healthCare
+  finance
+  education
+  retail
+  manufacturing
+  other
+}
+
+enum Size {
+  startup
+  small
+  medium
+  large
+}
+
+enum TeamMemberRole {
+  employee
+  manager
+  admin
+}
+
+enum TeamMemberStatus {
+  pending
+  active
+}
+
+enum UserDeleteStatus {
+  active
+  archive
+}
