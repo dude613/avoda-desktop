@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import "./App.css";
 import { TimerStatus } from "./types/timer";
+import { useState } from "react";
 import { formatTime } from "./lib/formatTime";
 import { useTimer } from "./hooks/useTimer";
 
@@ -17,6 +18,12 @@ function App() {
     handlePause,
     handleResume,
   } = useTimer();
+
+  const [showScreenshots, setShowScreenshots] = useState(true);
+
+  const toggleShowScreenshots = () => {
+    setShowScreenshots((prev) => !prev);
+  };
 
   return (
     <div className="relative container mx-auto p-4 max-w-2xl min-h-screen flex flex-col">
@@ -99,30 +106,36 @@ function App() {
 
       {/* Screenshot Display Area */}
       <div className="mt-8 pt-6 border-t border-gray-300 w-full text-center">
-        {/* Screenshot display container */}
-        <h2 className="text-xl font-semibold mb-4">Last Screenshots</h2>
-        <div className="flex justify-around items-center mt-4 min-h-[150px] bg-gray-50 p-3 rounded-md border border-gray-200">
-          {/* Images container */}
-          {lastScreenshots[0] && (
-            <img
-              src={lastScreenshots[0]}
-              alt="Previous screenshot"
-              className="max-w-[45%] max-h-[200px] h-auto border border-gray-300 shadow-md rounded"
-            />
-          )}
-          {lastScreenshots[1] && (
-            <img
-              src={lastScreenshots[1]}
-              alt="Latest screenshot"
-              className="max-w-[45%] max-h-[200px] h-auto border border-gray-300 shadow-md rounded"
-            />
-          )}
-          {!lastScreenshots[0] && !lastScreenshots[1] && (
-            <p className="text-gray-500">
-              No screenshots captured yet in this session.
-            </p>
-          )}
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">Last Screenshots</h2>
+          <Button onClick={toggleShowScreenshots} variant="outline" size="sm">
+            {showScreenshots ? "Hide" : "Show"} Screenshots
+          </Button>
         </div>
+        {showScreenshots && (
+          <div className="flex justify-around items-center mt-4 min-h-[150px] bg-gray-50 p-3 rounded-md border border-gray-200">
+            {/* Images container */}
+            {lastScreenshots[0] && (
+              <img
+                src={lastScreenshots[0]}
+                alt="Previous screenshot"
+                className="max-w-[45%] max-h-[200px] h-auto border border-gray-300 shadow-md rounded"
+              />
+            )}
+            {lastScreenshots[1] && (
+              <img
+                src={lastScreenshots[1]}
+                alt="Latest screenshot"
+                className="max-w-[45%] max-h-[200px] h-auto border border-gray-300 shadow-md rounded"
+              />
+            )}
+            {!lastScreenshots[0] && !lastScreenshots[1] && (
+              <p className="text-gray-500">
+                No screenshots captured yet in this session.
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
